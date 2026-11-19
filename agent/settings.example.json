@@ -1,0 +1,11 @@
+{
+  "centralUrl": "http://localhost:5180",
+  "agentToken": "TOKEN_INDIVIDUAL_GERADO_NO_PAINEL",
+  "sqlConnectionString": "Server=localhost;Integrated Security=True;Encrypt=True;TrustServerCertificate=False",
+  "backupDirectory": "C:\\ProgramData\\BackupControlAgent\\backups",
+  "pollSeconds": 20,
+  "sqlTimeoutSeconds": 3600,
+  "allowInsecureHttp": false,
+  "enableSchedule": true,
+  "copyOnlyFull": false
+}

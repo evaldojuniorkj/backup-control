@@ -1,0 +1,43 @@
+# Local secrets and runtime configuration
+.env
+.env.*
+!.env.example
+ACESSO-LOCAL.txt
+**/secrets/
+**/keys/
+**/data/
+*.pk8
+*.pfx
+*.p12
+*.key
+*.pem
+*.dat
+*.dump
+*.bak
+*.zip
+*.exe
+*.dll
+*.pdb
+*.log
+
+# Generated output and dependencies
+**/bin/
+**/obj/
+**/node_modules/
+**/__pycache__/
+*.pyc
+**/dist/
+artifacts/
+.vs/
+.idea/
+*.user
+*.suo
+
+# Operational screenshots contain client data
+*.png
+*.jpg
+*.jpeg
+
+# OS files
+.DS_Store
+Thumbs.db

@@ -1,0 +1,24 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { attentionReasons, configurationMatches, telemetryFresh, executionState, waitingCommands } from '../web/src/dashboard.ts';
+const now=Date.parse('2026-11-16T15:00:00Z');
+const client={enabled:true,createdAt:'2026-11-10T12:00:00Z',lastSeen:'2026-11-16T14:59:50Z',telemetryReceivedAt:'2026-11-16T14:59:50Z',expectedIntervalHours:24,differentialIntervalHours:4,graceMinutes:60,database:'ATXDADOS',lastFullBackupAt:'2026-11-15T16:00:00Z',lastDifferentialBackupAt:'2026-11-16T12:00:00Z',lastFullStatus:'Succeeded',lastDifferentialStatus:'Succeeded',lastStatus:'Succeeded',lastBackupAt:'2026-11-16T12:00:00Z',agentTelemetry:{nextFullAt:'2026-11-16T16:00:00Z',nextDifferentialAt:'2026-11-16T16:00:00Z',hasFullBase:true,scheduleEnabled:true,appliedFullIntervalHours:24,appliedDifferentialIntervalHours:4,appliedDatabase:'ATXDADOS',configAppliedAt:'2026-11-16T14:59:50Z',currentBackupType:null,currentPhase:null,currentStartedAt:null}};
+test('Agenda futura não conta como execução',()=>assert.equal(executionState(client,now),null));
+test('Execução automática recente entra no indicador',()=>assert.equal(executionState({...client,agentTelemetry:{...client.agentTelemetry,currentBackupType:'Differential',currentOrigin:'Scheduled',currentPhase:'ZipReady',currentStartedAt:'2026-11-16T14:58:00Z'}},now),'running'));
+test('Relato antigo não afirma que execução continua',()=>assert.equal(executionState({...client,telemetryReceivedAt:'2026-11-16T14:50:00Z',agentTelemetry:{...client.agentTelemetry,currentBackupType:'Full',currentPhase:'SqlStarted',currentStartedAt:'2026-11-16T14:49:00Z'}},now),'stale'));
+test('Comando recebido sem relato de início continua aguardando',()=>assert.equal(waitingCommands([{clientId:'a',state:'Claimed',backupType:'Full'}],[],now).length,1));
+test('Comando já executando não é duplicado como aguardando',()=>assert.equal(waitingCommands([{clientId:'a',state:'Claimed',backupType:'Full'}],[{...client,id:'a',agentTelemetry:{...client.agentTelemetry,currentBackupType:'Full',currentOrigin:'Manual',currentPhase:'SqlStarted',currentStartedAt:'2026-11-16T14:59:00Z'}}],now).length,0));
+test('Solicitação pendente e execução agendada são atividades distintas',()=>assert.equal(waitingCommands([{clientId:'a',state:'Pending',backupType:'Full'},{clientId:'a',state:'Completed',backupType:'Full'}],[{...client,id:'a'}],now).length,1));
+test('Cliente saudável não exige atenção',()=>assert.deepEqual(attentionReasons(client,now),[]));
+test('Pausados não entram na lista',()=>assert.deepEqual(attentionReasons({...client,enabled:false,lastSeen:null},now),[]));
+test('Completo atrasado não é ocultado por diferencial recente',()=>assert.ok(attentionReasons({...client,lastFullBackupAt:'2026-11-14T12:00:00Z'},now).some(r=>r.code==='full-overdue')));
+test('Diferencial atrasado é independente do completo',()=>assert.ok(attentionReasons({...client,lastFullBackupAt:'2026-11-16T08:00:00Z',lastDifferentialBackupAt:'2026-11-16T08:00:00Z'},now).some(r=>r.code==='diff-overdue')));
+test('Contato e telemetria antigos não são tratados como atuais',()=>{assert.equal(telemetryFresh({...client,telemetryReceivedAt:'2026-11-16T10:00:00Z'},now),false);assert.ok(attentionReasons({...client,lastSeen:'2026-11-16T10:00:00Z'},now).some(r=>r.code==='offline'));});
+test('Configuração alterada ainda precisa ser aplicada',()=>assert.equal(configurationMatches({...client,expectedIntervalHours:12}),false));
+test('Falha anterior resolvida por sucesso não persiste',()=>assert.ok(!attentionReasons(client,now).some(r=>r.code==='full-failed')));
+test('Primeiro completo e base ausente ficam explícitos',()=>assert.ok(attentionReasons({...client,lastFullBackupAt:null,agentTelemetry:{...client.agentTelemetry,hasFullBase:false}},now).some(r=>r.code==='first-full')));
+test('Erro detalhado é associado ao tipo que falhou',()=>assert.equal(attentionReasons({...client,lastFullStatus:'Failed',lastFullMessage:'Etapa ZipReady: conexão FTP indisponível'},now).find(r=>r.code==='full-failed').detail,'Etapa ZipReady: conexão FTP indisponível'));
+
+test('Contagem considera somente clientes ativos',async()=>{const {activeClients}=await import('../web/src/dashboard.ts');assert.equal(activeClients([client,{...client,enabled:false}]).length,1);});
+test('Alertas de rede do servidor entram na atenção sem culpar falhas SQL',()=>{assert.ok(attentionReasons({...client,networkAlerts:[{code:'ftp-ipv6-changed',message:'IPv6 alterado',since:null}]},now).some(r=>r.code==='ftp-ipv6-changed'));assert.ok(!attentionReasons({...client,lastFullStatus:'Failed',lastFullMessage:'Erro SQL'},now).some(r=>r.code==='ftp-connection'));});
+test('Falha no envio é identificada pela etapa FTP',()=>assert.ok(attentionReasons({...client,lastFullStatus:'Failed',lastFullMessage:'Etapa ZipReady: indisponível'},now).some(r=>r.code==='ftp-connection')));
