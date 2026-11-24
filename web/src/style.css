@@ -2584,9 +2584,13 @@ dd {
 
 [data-theme="dark"] .api-disconnected{color:#f4d38d;}
 
-.universal-installer{display:inline-flex;align-items:center;justify-content:center;padding:10px 14px;text-decoration:none;font-size:13px;white-space:nowrap}.title-actions{flex-wrap:wrap}.registration-panel{margin-bottom:24px}.registration-empty,.registration-recent{padding:20px 24px}.registration-empty p,.registration-recent{color:var(--muted);font-size:13px}.registration-code{font-family:Consolas,monospace;letter-spacing:1.5px;font-size:15px;font-weight:700;color:inherit}.registration-approval{width:min(800px,calc(100vw - 32px));max-height:90vh;overflow:auto}.registration-recent summary{cursor:pointer}.registration-recent li{padding:7px 0}.registration-panel .panel-heading{gap:16px}.registration-approval .installation-fields{margin-top:16px}
+.universal-installer{display:inline-flex;align-items:center;justify-content:center;padding:10px 14px;text-decoration:none;font-size:13px;white-space:nowrap}.title-actions{flex-wrap:wrap}.registration-panel{margin-bottom:24px}.registration-code{font-family:Consolas,monospace;letter-spacing:1.5px;font-size:15px;font-weight:700;color:inherit}.registration-approval{width:min(800px,calc(100vw - 32px));max-height:90vh;overflow:auto}.registration-approval .installation-fields{margin-top:16px}
+.registration-panel .panel-heading { padding:10px 16px; gap:8px 12px; flex-wrap:wrap; }
+.registration-panel .panel-heading h2 { flex:1 1 12rem; }
+.registration-panel .panel-heading:last-child { border-bottom:0; }
+.registration-panel .panel-heading .secondary { min-height:36px; padding:7px 12px; }
 
-@media(max-width:700px){.registration-panel .panel-heading{align-items:flex-start;flex-direction:column}.universal-installer{white-space:normal}.registration-code{font-size:13px}.title-actions .universal-installer{width:100%}}
+@media(max-width:700px){.universal-installer{white-space:normal}.registration-code{font-size:13px}.title-actions .universal-installer{width:100%}}
 
 
 

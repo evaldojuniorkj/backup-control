@@ -34,7 +34,13 @@ export function RunningBackups({clients,commands,onClose}:{clients:Client[];comm
 
       <CommunicationAlerts client={c}/>
 
-      <dl className="execution-details"><div><dt>Tipo</dt><dd>{types[t.currentBackupType||'']||'Não informado'}</dd></div><div><dt>Origem</dt><dd>{origins[t.currentOrigin||'Unknown']||'Não informada'}</dd></div><div><dt>Início{clockUncertain(c)?' (estimado)':''}</dt><dd>{date(agentDate(t.currentStartedAt,c))}</dd></div><div><dt>{isStale?'Última etapa informada':'Etapa atual'}</dt><dd>{phases[t.currentPhase||'']||'Não informada'}</dd></div><div><dt>Última atualização</dt><dd>{date(c.telemetryReceivedAt)}</dd></div></dl>
+      <dl className="execution-details">
+        <div><dt>Tipo</dt><dd>{types[t.currentBackupType||'']||'Não informado'}</dd></div>
+        <div><dt>Origem</dt><dd>{origins[t.currentOrigin||'Unknown']||'Não informada'}</dd></div>
+        <div><dt>Início{clockUncertain(c)?' (estimado)':''}</dt><dd>{date(agentDate(t.currentStartedAt,c))}</dd></div>
+        <div><dt>{isStale?'Última etapa informada':'Etapa informada pelo agente'}</dt><dd>{phases[t.currentPhase||'']||'Não informada'}</dd></div>
+        <div><dt>Última atualização</dt><dd>{date(c.telemetryReceivedAt)}</dd></div>
+      </dl>
 
       {isStale&&<p className="form-hint">O relato está desatualizado ou incompleto. Não é possível confirmar se o backup continua em execução.</p>}
 
@@ -46,23 +52,38 @@ export function RunningBackups({clients,commands,onClose}:{clients:Client[];comm
 
     <div className="modal-title"><div><span className="eyebrow">ACOMPANHAMENTO DA OPERAÇÃO</span><h2 id="running-title">Atividade dos backups</h2></div><button autoFocus className="close" aria-label="Fechar atividade dos backups" onClick={onClose}>×</button></div>
 
-    <p>{running.length} executando · {waiting.length} aguardando · {stale.length} sem atualização. Atualização a cada 15 segundos.</p>
+    {!running.length && !waiting.length && !stale.length &&
+      <p>Nenhuma atividade de backup no momento.</p>}
 
-    <p>Execuções manuais e agendadas informadas pelo agente.</p><h3 className="stale-heading">Executando agora ({running.length})</h3>
+    {running.length > 0 && <>
+      <h3 className="stale-heading">Executando agora ({running.length})</h3>
+      {running.map(c=>row(c,false))}
+    </>}
 
-    {running.length?running.map(c=>row(c,false)):<p>Nenhum backup em execução informado.</p>}
+    {waiting.length > 0 && <>
+      <h3 className="stale-heading">Aguardando início ({waiting.length})</h3>
+      {waiting.map(command=>{
+        const client=clients.find(c=>c.id===command.clientId);
+        return <article key={command.id} className="attention-client">
+          <div className="attention-client-heading">
+            <h3>{command.clientName}</h3>
+            <span className="badge pending">Aguardando início</span>
+          </div>
+          {client&&<CommunicationAlerts client={client}/>}
+          <dl className="execution-details">
+            <div><dt>Tipo</dt><dd>{types[command.backupType]||command.backupType}</dd></div>
+            <div><dt>Origem</dt><dd>Manual</dd></div>
+            <div><dt>Solicitado em</dt><dd>{date(command.createdAt)}</dd></div>
+            <div><dt>Situação</dt><dd>{command.state==='Pending'?'Aguardando o agente receber':'Recebido pelo agente — aguardando confirmação de início'}</dd></div>
+          </dl>
+        </article>;
+      })}
+    </>}
 
-    <h3 className="stale-heading">Aguardando início ({waiting.length})</h3>
-
-    {waiting.length?waiting.map(command=><article key={command.id} className="attention-client"><div className="attention-client-heading"><h3>{command.clientName}</h3><span className="badge pending">Aguardando início</span></div>{clients.find(c=>c.id===command.clientId)&&<CommunicationAlerts client={clients.find(c=>c.id===command.clientId)!}/>}<dl className="execution-details"><div><dt>Tipo</dt><dd>{types[command.backupType]||command.backupType}</dd></div><div><dt>Origem</dt><dd>Manual</dd></div><div><dt>Solicitado em</dt><dd>{date(command.createdAt)}</dd></div><div><dt>Situação</dt><dd>{command.state==='Pending'?'Aguardando o agente receber':'Recebido pelo agente — aguardando confirmação de início'}</dd></div></dl></article>):<p>Nenhuma solicitação aguardando início.</p>}
-
-    <h3 className="stale-heading">Sem atualização ({stale.length})</h3>
-
-    {stale.length?<><p>Não é possível confirmar se estas operações continuam rodando.</p>{stale.map(c=>row(c,true))}</>:<p>Nenhuma operação com relato desatualizado.</p>}
-
-    <p className="form-hint">As próximas execuções programadas continuam na agenda de cada cliente e não entram na fila de solicitações.</p>
-
-    <p className="form-hint">A etapa é reportada pelo agente; não representa porcentagem de progresso. Execuções muito rápidas podem terminar entre duas atualizações e aparecer somente no histórico.</p>
+    {stale.length > 0 && <>
+      <h3 className="stale-heading">Sem atualização ({stale.length})</h3>
+      {stale.map(c=>row(c,true))}
+    </>}
 
   </section></div>;
 
