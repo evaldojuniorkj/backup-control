@@ -30,9 +30,7 @@ public class AgentState
     public DateTimeOffset? ConfigAppliedAt {get;set;}
     public DateTimeOffset? NextDifferentialAt {get;set;}
     public DateTimeOffset? LastSuccessfulFullAt {get;set;}
-    public DateTimeOffset? LastFullAttemptAt {get;set;}
-    public int ConsecutiveScheduledFullFailures { get; set; }
-    public DateTimeOffset? ScheduledFullRetryAt { get; set; }
+    public bool AwaitingScheduledFull { get; set; }
     public ScheduledUploadRetry? PendingScheduledUpload { get; set; }
     public string? FullBaseLsn {get;set;}
     public string? FullBaseDatabase {get;set;}

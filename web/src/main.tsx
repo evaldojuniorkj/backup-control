@@ -1767,7 +1767,7 @@ function App() {
       </main>
 
       {serverMonitorOpen&&<ServerMonitor api={api} onClose={()=>setServerMonitorOpen(false)}/>}
-      {updatesOpen&&<AgentUpdates clients={clients} api={api} isAdmin={userRole==='Admin'} onClose={()=>setUpdatesOpen(false)}/>}
+      <AgentUpdates clients={clients} api={api} isAdmin={userRole==='Admin'} open={updatesOpen} onClose={()=>setUpdatesOpen(false)}/>
       {deleteClient&&!deleteClient.enabled&&savedBaseDirectory!==null&&userRole==='Admin'&&<DeleteClient client={deleteClient} baseDirectory={savedBaseDirectory} api={api} onClose={()=>setDeleteClient(null)} onDeleted={async result=>{await refresh();setNotice(deletionResultNotice(result));}}/>}
       {operationsClientId&&clients.some(c=>c.id===operationsClientId)&&<ClientOperations key={operationsClientId} client={clients.find(c=>c.id===operationsClientId)!} api={api} onClose={()=>setOperationsClientId(null)}/>}
 

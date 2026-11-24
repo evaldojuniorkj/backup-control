@@ -50,10 +50,81 @@ public class EngineTests : IDisposable
         Assert.NotNull(store.State.Current);Assert.Equal(0,sql.Backups);Assert.Equal(0,upload.Uploads);Assert.Equal(0,central.Confirmations);
     }
     private DatabaseChangeStamp Stamp(string lsn="first")=>new(Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),Guid.Parse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"),lsn,"123");
+    [Fact]
+    public async Task ChangedDifferentialBaseWaitsForConfirmedScheduledFull()
+    {
+        central.Settings = central.Settings with { DifferentialIntervalHours = 4 };
+        store.State.NextRunAt = clock.Now;
+        await Engine().Cycle(false, "Full", default);
+        var scheduledFull = store.State.NextRunAt!.Value;
+
+        clock.Now = clock.Now.AddHours(4);
+        sql.BaseLsn = "456";
+        await Engine().Cycle(false, "Full", default);
+        Assert.Equal("Failed", central.Results.Last().Status);
+        Assert.Equal("Differential", central.Results.Last().BackupType);
+        Assert.Equal(scheduledFull, central.Telemetry.Last().NextFullAt);
+        Assert.Null(central.Telemetry.Last().NextDifferentialAt);
+
+        clock.Now = clock.Now.AddMinutes(1);
+        await Engine().Cycle(false, "Full", default);
+        Assert.Equal(2, sql.Backups);
+        Assert.Equal(1, upload.Uploads);
+
+        clock.Now = scheduledFull;
+        await Engine().Cycle(false, "Full", default);
+        Assert.Equal("Full", central.Results.Last().BackupType);
+        Assert.Equal("Succeeded", central.Results.Last().Status);
+        Assert.Equal(scheduledFull.AddHours(4), central.Telemetry.Last().NextDifferentialAt);
+    }
+
+    [Fact]
+    public async Task ManualFullDoesNotMoveScheduleOrEnableScheduledDifferential()
+    {
+        central.Settings = central.Settings with { DifferentialIntervalHours = 4 };
+        var scheduledFull = clock.Now.AddHours(8);
+        store.State.NextRunAt = scheduledFull;
+        await Engine().Cycle(true, "Full", default);
+        Assert.Equal(scheduledFull, store.State.NextRunAt);
+        Assert.Null(central.Telemetry.Last().NextDifferentialAt);
+
+        clock.Now = clock.Now.AddHours(4);
+        await Engine().Cycle(false, "Full", default);
+        Assert.Single(central.Results);
+        await Engine().Cycle(true, "Differential", default);
+        Assert.Equal("Succeeded", central.Results.Last().Status);
+        Assert.Null(central.Telemetry.Last().NextDifferentialAt);
+
+        sql.Stamp = Stamp();
+        clock.Now = scheduledFull;
+        await Engine().Cycle(false, "Full", default);
+        Assert.Equal("Full", central.Results.Last().BackupType);
+        Assert.Equal(scheduledFull.AddHours(4), central.Telemetry.Last().NextDifferentialAt);
+    }
+
+    [Fact]
+    public async Task PendingDifferentialUploadDoesNotBlockDueScheduledFull()
+    {
+        central.Settings = central.Settings with { DifferentialIntervalHours = 4 };
+        store.State.NextRunAt = clock.Now;
+        await Engine().Cycle(false, "Full", default);
+
+        clock.Now = store.State.NextRunAt!.Value.AddMinutes(-1);
+        upload.Fail = true;
+        await Engine().Cycle(false, "Full", default);
+        Assert.Equal("Differential", central.Results.Last().BackupType);
+
+        clock.Now = clock.Now.AddMinutes(1);
+        upload.Fail = false;
+        await Engine().Cycle(false, "Full", default);
+        Assert.Equal("Full", central.Results.Last().BackupType);
+        Assert.Equal("Succeeded", central.Results.Last().Status);
+    }
+
     [Fact] public async Task UnchangedScheduledDifferentialSkipsWithoutMovingFullOrSuccessfulTimestamps()
     {
         sql.Stamp=Stamp();central.Settings=central.Settings with{DifferentialIntervalHours=4};
-        await Engine().Cycle(true,"Full",default);var full=store.State.LastSuccessfulFullAt;var next=store.State.NextRunAt;
+        await RunScheduledFull();var full=store.State.LastSuccessfulFullAt;var next=store.State.NextRunAt;
         clock.Now=clock.Now.AddHours(4);await Engine().Cycle(false,"Full",default);
         Assert.Equal("Skipped",central.Results.Last().Status);Assert.Equal("Differential",central.Results.Last().BackupType);
         Assert.Equal(1,sql.Backups);Assert.Equal(1,upload.Uploads);Assert.Equal(next,store.State.NextRunAt);Assert.Equal(full,store.State.LastSuccessfulFullAt);
@@ -69,7 +140,7 @@ public class EngineTests : IDisposable
     }
     [Fact] public async Task ChangedOrUnknownMarkerNeverSkipsAndFailedUploadNeverAdvancesProtectedMarker()
     {
-        sql.Stamp=Stamp();central.Settings=central.Settings with{DifferentialIntervalHours=4};await Engine().Cycle(true,"Full",default);
+        sql.Stamp=Stamp();central.Settings=central.Settings with{DifferentialIntervalHours=4};await RunScheduledFull();
         sql.Stamp=Stamp("changed");upload.Fail=true;clock.Now=clock.Now.AddHours(4);await Engine().Cycle(false,"Full",default);
         Assert.Equal("Failed",central.Results.Last().Status);Assert.Equal("first",store.State.SuccessfulChangeStamp!.LogEndLsn);
         upload.Fail=false;clock.Now=clock.Now.AddHours(4);await Engine().Cycle(false,"Full",default);Assert.Equal("Succeeded",central.Results.Last().Status);
@@ -81,7 +152,7 @@ public class EngineTests : IDisposable
     {
         central.Settings=central.Settings with{DifferentialIntervalHours=4};
         upload.Fail=true;
-        await Engine().Cycle(false,"Full",default);
+        await RunScheduledFull();
         var failed=Assert.Single(central.Results);
         Assert.Equal("Failed",failed.Status);
         Assert.Null(central.Telemetry.Last().CurrentPhase);
@@ -115,7 +186,7 @@ public class EngineTests : IDisposable
     {
         central.Settings=central.Settings with{DifferentialIntervalHours=4};
         upload.Fail=true;
-        await Engine().Cycle(false,"Full",default);
+        await RunScheduledFull();
         var first=Assert.Single(central.Results);
         clock.Now=clock.Now.AddDays(31);
         upload.Fail=false;
@@ -128,21 +199,23 @@ public class EngineTests : IDisposable
         Assert.Equal(1,sql.Backups);
     }
 
-    [Fact] public async Task RepeatedScheduledFullFailuresBackOffAndManualStillRunsImmediately()
+    [Fact] public async Task FailedScheduledFullKeepsNextDeadlineAndManualStillRunsImmediately()
     {
         central.Settings=central.Settings with{DifferentialIntervalHours=4};
         sql.FailVerification=true;
-        await Engine().Cycle(false,"Full",default);
+        await RunScheduledFull();
+        var nextFull = store.State.NextRunAt;
         clock.Now=clock.Now.AddMinutes(15);
         await Engine().Cycle(false,"Full",default);
-        Assert.Equal(clock.Now.AddMinutes(30),central.Telemetry.Last().NextFullAt);
+        Assert.Equal(nextFull,central.Telemetry.Last().NextFullAt);
 
         clock.Now=clock.Now.AddMinutes(15);
         await Engine().Cycle(false,"Full",default);
-        Assert.Equal(2,sql.Backups);
+        Assert.Equal(1,sql.Backups);
         sql.FailVerification=false;
         await Engine().Cycle(true,"Full",default);
-        Assert.Equal(3,sql.Backups);
+        Assert.Equal(2,sql.Backups);
+        Assert.Equal(nextFull,store.State.NextRunAt);
         Assert.Equal("Succeeded",central.Results.Last().Status);
     }
 
@@ -150,7 +223,7 @@ public class EngineTests : IDisposable
     {
         central.Settings=central.Settings with{DifferentialIntervalHours=4};
         upload.Fail=true;
-        await Engine().Cycle(false,"Full",default);
+        await RunScheduledFull();
         var failed=Assert.Single(central.Results);
         clock.Now=clock.Now.AddMinutes(1);
         upload.Fail=false;
@@ -168,7 +241,7 @@ public class EngineTests : IDisposable
     {
         central.Settings=central.Settings with{DifferentialIntervalHours=4};
         upload.Fail=true;
-        await Engine().Cycle(false,"Full",default);
+        await RunScheduledFull();
         var pending=Assert.Single(central.Results);
         await Engine().Cycle(true,"Differential",default);
         Assert.Equal("Failed",central.Results.Last().Status);
@@ -185,10 +258,14 @@ public class EngineTests : IDisposable
     {
         central.Settings=central.Settings with{DifferentialIntervalHours=4};
         upload.Fail=true;
-        await Engine().Cycle(false,"Full",default);
+        await RunScheduledFull();
         var pending=Assert.Single(central.Results);
         central.Settings=central.Settings with{Storage=central.Settings.Storage! with{Host="another.example.com"}};
         upload.Fail=false;
+        await Engine().Cycle(false,"Full",default);
+        Assert.Single(central.Results);
+        Assert.Null(store.State.PendingScheduledUpload);
+        clock.Now=store.State.NextRunAt!.Value;
         await Engine().Cycle(false,"Full",default);
 
         Assert.Equal("Succeeded",central.Results.Last().Status);
@@ -201,7 +278,7 @@ public class EngineTests : IDisposable
     {
         central.Settings=central.Settings with{DifferentialIntervalHours=4};
         upload.Fail=true;
-        await Engine().Cycle(false,"Full",default);
+        await RunScheduledFull();
         clock.Now=clock.Now.AddMinutes(15);
         await Engine(new FtpUploader()).Cycle(false,"Full",default);
 
@@ -261,11 +338,16 @@ public class EngineTests : IDisposable
     private readonly CentralStub central = new();
     private readonly Clock clock=new();
     private AgentEngine Engine(IUploader? uploader=null) => new(new LocalSettings("http://localhost:5180", new string('a', 64), "Server=localhost;Integrated Security=True", directory), store, central, sql, new ArchiveStub(), uploader??upload, NullLogger<AgentEngine>.Instance,clock);
+    private Task RunScheduledFull()
+    {
+        store.State.NextRunAt = clock.Now;
+        return Engine().Cycle(false, "Full", default);
+    }
     [Fact]
     public async Task TelemetryMatchesPersistedFullAndDifferentialDeadlines()
     {
         central.Settings=central.Settings with{DifferentialIntervalHours=4};
-        await Engine().Cycle(true,"Full",default);
+        await RunScheduledFull();
         var status=central.Telemetry.Last();
         Assert.Equal(store.State.NextRunAt,status.NextFullAt);
         Assert.Equal(store.State.NextDifferentialAt,status.NextDifferentialAt);
@@ -273,7 +355,7 @@ public class EngineTests : IDisposable
         Assert.Equal(4,status.AppliedDifferentialIntervalHours);
         Assert.Null(status.CurrentBackupType);
         Assert.Contains(central.Telemetry,t=>t.CurrentPhase=="SqlStarted");
-        Assert.Contains(central.Telemetry,t=>t.CurrentPhase=="SqlStarted"&&t.CurrentOrigin=="Manual");
+        Assert.Contains(central.Telemetry,t=>t.CurrentPhase=="SqlStarted"&&t.CurrentOrigin=="Scheduled");
     }
     [Fact]
     public async Task InitialScheduleIsReportedWithoutInventingSuccessfulBackup()
@@ -353,7 +435,7 @@ public class EngineTests : IDisposable
     public async Task DifferentialRunsAfterFourHoursAndKeepsFullDeadline()
     {
         central.Settings=central.Settings with{DifferentialIntervalHours=4};
-        await Engine().Cycle(true,"Full",default);
+        await RunScheduledFull();
         var fullDeadline=store.State.NextRunAt;
         clock.Now=clock.Now.AddHours(3);await Engine().Cycle(false,"Full",default);
         Assert.Single(central.Results);
@@ -366,14 +448,18 @@ public class EngineTests : IDisposable
     public async Task FullTakesPriorityWhenBothSchedulesAreDue()
     {
         central.Settings=central.Settings with{DifferentialIntervalHours=4};
-        await Engine().Cycle(true,"Full",default);
+        await RunScheduledFull();
         clock.Now=clock.Now.AddHours(24);await Engine().Cycle(false,"Full",default);
         Assert.Equal("Full",central.Results.Last().BackupType);
     }
     [Fact]
-    public async Task EnablingDifferentialCreatesFullBaselineFirst()
+    public async Task EnablingDifferentialWaitsForFirstScheduledFull()
     {
         central.Settings=central.Settings with{DifferentialIntervalHours=4};
+        await Engine().Cycle(false,"Full",default);
+        Assert.Empty(central.Results);
+        Assert.Null(central.Telemetry.Last().NextDifferentialAt);
+        clock.Now=store.State.NextRunAt!.Value;
         await Engine().Cycle(false,"Full",default);
         Assert.Equal("Full",Assert.Single(central.Results).BackupType);
         Assert.Contains(central.Telemetry,t=>t.CurrentPhase=="SqlStarted"&&t.CurrentOrigin=="Scheduled");
@@ -382,9 +468,9 @@ public class EngineTests : IDisposable
     public async Task FailedFullNeverEnablesDifferentialsAndDoesNotLoopImmediately()
     {
         central.Settings=central.Settings with{DifferentialIntervalHours=4};sql.FailVerification=true;
-        await Engine().Cycle(false,"Full",default);await Engine().Cycle(false,"Full",default);
+        await RunScheduledFull();await Engine().Cycle(false,"Full",default);
         Assert.Equal(1,sql.Backups);Assert.Null(store.State.FullBaseLsn);Assert.Null(store.State.NextDifferentialAt);
-        Assert.Equal(clock.Now.AddMinutes(15),central.Telemetry.Last().NextFullAt);
+        Assert.Equal(clock.Now.AddHours(24),central.Telemetry.Last().NextFullAt);
     }
     [Fact]
     public async Task UnexpectedDifferentialBaseIsNotUploaded()
@@ -399,6 +485,9 @@ public class EngineTests : IDisposable
         central.Settings=central.Settings with{DifferentialIntervalHours=4};
         await Engine().Cycle(true,"Full",default);
         central.Settings=central.Settings with{Storage=central.Settings.Storage! with{Host="another.example.com"}};
+        await Engine().Cycle(false,"Full",default);
+        Assert.Single(central.Results);
+        clock.Now=store.State.NextRunAt!.Value;
         await Engine().Cycle(false,"Full",default);
         Assert.Equal(2,central.Results.Count);Assert.Equal("Full",central.Results.Last().BackupType);
     }

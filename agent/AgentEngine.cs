@@ -4,8 +4,6 @@ namespace BackupControl.Agent;
 public sealed class AgentEngine(LocalSettings settings, IStateStore store, ICentral central, ISqlBackup sql, IArchive archive, IUploader uploader, ILogger<AgentEngine> log,TimeProvider? timeProvider=null)
 {
     private static readonly TimeSpan RetryInterval = TimeSpan.FromMinutes(15);
-    private static readonly TimeSpan[] FullRetryDelays =
-        [RetryInterval, TimeSpan.FromMinutes(30), TimeSpan.FromHours(1), TimeSpan.FromHours(2), TimeSpan.FromHours(4)];
     private DateTimeOffset Now=>(timeProvider??TimeProvider.System).GetUtcNow();
     public bool PermanentlyDisabled {get;private set;}
     public BackupResult? LastResult { get; private set; }
@@ -35,15 +33,13 @@ public sealed class AgentEngine(LocalSettings settings, IStateStore store, ICent
     {
         if(state.Config is null||state.Suspended){latestTelemetry=null;return;}
         var c=state.Config;
-        var hasBase = HasValidFullBase(state, c);
-        var nextFull = settings.EnableSchedule && state.Current?.BackupType != "Full"
-            ? NextScheduledFull(state, hasBase)
-            : state.NextRunAt;
-        var nextDifferential = state.NextDifferentialAt;
+        var hasBase = HasScheduledFullBase(state, c);
+        var nextFull = state.NextRunAt;
+        var nextDifferential = hasBase ? state.NextDifferentialAt : null;
         if (settings.EnableSchedule && state.Current is null && state.PendingScheduledUpload is {} pending)
         {
             if (pending.Operation.BackupType == "Full") nextFull = pending.RetryAt;
-            else nextDifferential = pending.RetryAt;
+            else if (hasBase) nextDifferential = pending.RetryAt;
         }
         latestTelemetry=new(nextFull,nextDifferential,state.LastSuccessfulFullAt,hasBase,
             settings.EnableSchedule,c.ExpectedIntervalHours,c.DifferentialIntervalHours,c.Database,state.ConfigAppliedAt,
@@ -52,20 +48,19 @@ public sealed class AgentEngine(LocalSettings settings, IStateStore store, ICent
         await SendTelemetry(latestTelemetry,ct);
     }
 
-    private static bool HasValidFullBase(AgentState state, ClientConfig config) =>
+    private static bool HasScheduledFullBase(AgentState state, ClientConfig config) =>
+        (config.DifferentialIntervalHours == 0 || !state.AwaitingScheduledFull) &&
         state.FullBaseLsn is not null && state.FullBaseDatabase == config.Database &&
         state.FullBaseDestination == Safety.DestinationIdentity(config) && state.LastSuccessfulFullAt.HasValue;
 
-    private DateTimeOffset? NextScheduledFull(AgentState state, bool hasBase)
+    private static void InvalidateFullBase(AgentState state)
     {
-        var next = state.NextRunAt;
-        if (state.Config!.DifferentialIntervalHours > 0 && !hasBase)
-        {
-            var baselineRetry = state.LastFullAttemptAt?.Add(RetryInterval) ?? Now;
-            if (next is null || baselineRetry < next) next = baselineRetry;
-        }
-        if (state.ScheduledFullRetryAt is {} retryAt && (next is null || next < retryAt)) next = retryAt;
-        return next;
+        state.FullBaseLsn = null;
+        state.FullBaseDatabase = null;
+        state.FullBaseDestination = null;
+        state.LastSuccessfulFullAt = null;
+        state.NextDifferentialAt = null;
+        state.AwaitingScheduledFull = true;
     }
     private async Task<bool> DeactivateIfRequested(AgentState state,CancellationToken ct)
     {
@@ -83,9 +78,9 @@ public sealed class AgentEngine(LocalSettings settings, IStateStore store, ICent
         }
         // Cycle boundaries are serialized. No SQL command/upload can be active here.
         // Pending/recovered metadata is intentionally retired with this customer's history.
-        state.Config=null;state.Current=null;state.Outbox.Clear();state.NextRunAt=null;state.NextDifferentialAt=null;
-        state.PendingScheduledUpload=null;state.ScheduledFullRetryAt=null;state.ConsecutiveScheduledFullFailures=0;
-        state.FullBaseLsn=null;state.FullBaseDatabase=null;state.FullBaseDestination=null;state.SuccessfulChangeStamp=null;
+        state.Config=null;state.Current=null;state.Outbox.Clear();state.NextRunAt=null;
+        state.PendingScheduledUpload=null;state.SuccessfulChangeStamp=null;
+        InvalidateFullBase(state);
         state.SqlConfigError=null;state.LastResultError=null;state.SqlConfigStatus=null;state.AppliedSqlRevision=null;
         await store.Write(state,ct);
         await store.ClearBackupCredentials(false,ct); // Never ACK until both SQL/FTP caches are sanitized.
@@ -110,10 +105,10 @@ public sealed class AgentEngine(LocalSettings settings, IStateStore store, ICent
             if (state.Config is not null && state.NextRunAt.HasValue && state.Config.ExpectedIntervalHours != fresh.ExpectedIntervalHours)
                 state.NextRunAt = state.NextRunAt.Value.AddHours(fresh.ExpectedIntervalHours - state.Config.ExpectedIntervalHours);
             if(state.Config?.Database!=fresh.Database||(state.Config is not null&&Safety.DestinationIdentity(state.Config)!=Safety.DestinationIdentity(fresh))){
-                state.FullBaseLsn=null;state.FullBaseDatabase=null;state.FullBaseDestination=null;state.LastSuccessfulFullAt=null;state.NextDifferentialAt=null;state.LastFullAttemptAt=null;
-                state.PendingScheduledUpload=null;state.ScheduledFullRetryAt=null;state.ConsecutiveScheduledFullFailures=0;
+                InvalidateFullBase(state);
+                state.PendingScheduledUpload=null;
             }
-            if(fresh.DifferentialIntervalHours==0)state.NextDifferentialAt=null;
+            if(fresh.DifferentialIntervalHours==0||state.AwaitingScheduledFull)state.NextDifferentialAt=null;
             else if(state.Config?.DifferentialIntervalHours!=fresh.DifferentialIntervalHours&&state.LastSuccessfulFullAt.HasValue)
                 state.NextDifferentialAt=state.NextDifferentialAt.HasValue&&state.Config!.DifferentialIntervalHours>0
                     ?state.NextDifferentialAt.Value.AddHours(fresh.DifferentialIntervalHours-state.Config.DifferentialIntervalHours)
@@ -166,7 +161,9 @@ public sealed class AgentEngine(LocalSettings settings, IStateStore store, ICent
             catch (AgentUnauthorizedException) { state.Suspended = true; await store.Write(state, ct); return; }
             catch (HttpRequestException) { log.LogWarning("Não foi possível consultar comandos. Nenhum comando presumido."); }
         }
-        if (command is null && !force && state.PendingScheduledUpload is {} pending)
+        var fullDue = state.NextRunAt <= Now;
+        if (command is null && !force && state.PendingScheduledUpload is {} pending &&
+            !(settings.EnableSchedule && fullDue && pending.Operation.BackupType == "Differential"))
         {
             if (settings.EnableSchedule && pending.RetryAt <= Now && state.Outbox.Count < 100)
             {
@@ -179,8 +176,7 @@ public sealed class AgentEngine(LocalSettings settings, IStateStore store, ICent
             }
             return;
         }
-        var validBase = HasValidFullBase(state, config);
-        var fullDue = NextScheduledFull(state, validBase) <= Now;
+        var validBase = HasScheduledFullBase(state, config);
         var diffDue=config.DifferentialIntervalHours>0&&validBase&&state.NextDifferentialAt<=Now;
         var due = settings.EnableSchedule && (fullDue||diffDue);
         if (command is null && !force && !due) return;
@@ -201,8 +197,8 @@ public sealed class AgentEngine(LocalSettings settings, IStateStore store, ICent
         var name = Safety.FileName(config.Database, now, id, backupType);
         Directory.CreateDirectory(settings.BackupDirectory);
         state.Current = new Operation(id, command?.Id, backupType, now, config.Database, config.RemoteDirectory, Path.Combine(settings.BackupDirectory, Path.ChangeExtension(name, ".bak")), Path.Combine(settings.BackupDirectory, name), name,DestinationId:Safety.DestinationIdentity(config),Origin:command is not null||force?"Manual":"Scheduled",ChangeStamp:stamp,ChangeDetection:stamp is null?"Unavailable":"Checked");
-        if (backupType == "Full") {state.NextRunAt = now.AddHours(config.ExpectedIntervalHours);state.LastFullAttemptAt=now;}
-        if(backupType=="Differential")state.NextDifferentialAt=config.DifferentialIntervalHours>0?now.AddHours(config.DifferentialIntervalHours):null;
+        if(backupType=="Full"&&state.Current.Origin=="Scheduled")state.NextRunAt=now.AddHours(config.ExpectedIntervalHours);
+        if(backupType=="Differential"&&validBase)state.NextDifferentialAt=config.DifferentialIntervalHours>0?now.AddHours(config.DifferentialIntervalHours):null;
         await store.Write(state, ct);
         await Resume(state, config.Storage, ct);
         if (online) await Flush(state, ct);
@@ -217,9 +213,9 @@ public sealed class AgentEngine(LocalSettings settings, IStateStore store, ICent
             if (op.Phase == "Created")
             {
                 if(op.BackupType=="Differential"&&(state.FullBaseLsn is null||state.FullBaseDatabase!=op.Database||state.FullBaseDestination!=Safety.DestinationIdentity(state.Config!)))throw new ArgumentException("Execute um backup completo por este agente antes do diferencial.");
-                if(op.BackupType=="Full"){state.FullBaseLsn=null;state.FullBaseDatabase=null;state.FullBaseDestination=null;state.LastSuccessfulFullAt=null;state.NextDifferentialAt=null;}
+                if(op.BackupType=="Full")InvalidateFullBase(state);
                 await sql.Check(op.Database, ct);
-                if (op.Origin == "Manual" && op.BackupType == "Full") SupersedePendingUpload(state);
+                if(op.BackupType=="Full")SupersedePendingUpload(state);
                 state.Current = op = op with { Phase = "SqlStarted" }; await store.Write(state, ct);
                 await Publish(state,ct);
                 log.LogInformation("Gerando backup {Type}; execução {Id}.", op.BackupType, op.EventId);
@@ -234,8 +230,8 @@ public sealed class AgentEngine(LocalSettings settings, IStateStore store, ICent
                 if(op.BackupType=="Full"&&!settings.CopyOnlyFull&&baseLsn is null)throw new IOException("Base do completo não identificada.");
                 if(op.BackupType=="Differential"&&(baseLsn is null||baseLsn!=state.FullBaseLsn))
                 {
-                    state.FullBaseLsn=null;state.FullBaseDatabase=null;state.FullBaseDestination=null;state.LastSuccessfulFullAt=null;state.NextDifferentialAt=null;
-                    throw new ArgumentException("A base diferencial mudou. Gere outro completo pelo agente; o diferencial incompatível não foi enviado.");
+                    InvalidateFullBase(state);
+                    throw new ArgumentException("A base diferencial mudou. O diferencial incompatível não foi enviado. A rotina aguarda o próximo completo agendado.");
                 }
                 var zipped = await archive.Create(op, ct);
                 state.Current = op = op with { Phase = "ZipReady", SizeBytes = zipped.Size, Sha256 = zipped.Sha256,BaseLsn=baseLsn }; await store.Write(state, ct);
@@ -266,7 +262,7 @@ public sealed class AgentEngine(LocalSettings settings, IStateStore store, ICent
     private void SupersedePendingUpload(AgentState state)
     {
         if (state.PendingScheduledUpload is null) return;
-        log.LogInformation("Execução manual substituiu a retentativa de envio agendada. Arquivos anteriores preservados.");
+        log.LogInformation("Uma nova execução substituiu a retentativa de envio agendada. Arquivos anteriores preservados.");
         state.PendingScheduledUpload = null;
     }
 
@@ -298,20 +294,6 @@ public sealed class AgentEngine(LocalSettings settings, IStateStore store, ICent
             state.PendingScheduledUpload = null;
             message += $" Backup original iniciado em {originalBackupAt:O}.";
         }
-        if (op.BackupType == "Full")
-        {
-            if (status == "Succeeded")
-            {
-                state.ConsecutiveScheduledFullFailures = 0;
-                state.ScheduledFullRetryAt = null;
-            }
-            else if (op.Origin == "Scheduled" && state.PendingScheduledUpload?.Operation.FileName != op.FileName)
-            {
-                var level = Math.Clamp(state.ConsecutiveScheduledFullFailures, 0, FullRetryDelays.Length - 1);
-                state.ScheduledFullRetryAt = Now.Add(FullRetryDelays[level]);
-                state.ConsecutiveScheduledFullFailures = level + 1;
-            }
-        }
         if(status=="Succeeded"&&op.BackupType is "Full" or "Differential"){
             if (op.Origin == "Manual" && op.BackupType == "Differential") SupersedePendingUpload(state);
             state.SuccessfulChangeStamp=op.ChangeStamp;
@@ -321,8 +303,11 @@ public sealed class AgentEngine(LocalSettings settings, IStateStore store, ICent
         }
         if(status=="Succeeded"&&op.BackupType=="Full"&&!settings.CopyOnlyFull)
         {
+            var config = state.Config!;
             state.FullBaseLsn=op.BaseLsn;state.FullBaseDatabase=op.Database;state.FullBaseDestination=op.DestinationId;state.LastSuccessfulFullAt=originalBackupAt??Now;
-            state.NextDifferentialAt=state.Config!.DifferentialIntervalHours>0&&op.BaseLsn is not null?state.LastSuccessfulFullAt.Value.AddHours(state.Config.DifferentialIntervalHours):null;
+            state.AwaitingScheduledFull = op.Origin != "Scheduled";
+            state.NextDifferentialAt = config.DifferentialIntervalHours > 0 && HasScheduledFullBase(state, config)
+                ? state.LastSuccessfulFullAt.Value.AddHours(config.DifferentialIntervalHours) : null;
         }
         var result = new BackupResult(op.EventId, op.CommandId, op.BackupType, status, op.StartedAt, Now, op.SizeBytes, op.FileName, message);
         state.Outbox.Add(result); state.Current = null; LastResult = result;

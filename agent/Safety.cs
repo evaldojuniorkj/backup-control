@@ -52,6 +52,7 @@ public static class Safety
         return error switch
         {
             BackupUploadRejectedException => error.Message,
+            FtpTransferException => error.Message,
             UnauthorizedAccessException => "Acesso negado ao diretório de backup ou ao arquivo de configuração.",
             AgentUnauthorizedException => "Token recusado ou cliente pausado na central.",
             CentralRejectedException => error.Message,

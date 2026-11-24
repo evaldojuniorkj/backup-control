@@ -1,10 +1,23 @@
 export type UpdateClient={id:string;name:string;enabled:boolean;agentVersion?:string|null;remoteUpdateSupported?:boolean|null;hasAgentBinding?:boolean};
-export type UpdateJob={id:string;clientId:string;clientName:string;state:string;targetVersion:string;updatedAt:string;message:string;installedVersion?:string};
+export type UpdateJob={id:string;clientId:string;clientName:string;state:string;targetVersion:string;updatedAt:string;message:string;installedVersion?:string|null};
 export const pendingUpdate=(state:string)=>['Pending','Waiting'].includes(state);
+export const activeUpdate=(state:string)=>pendingUpdate(state)||['Downloading','Applying','Verifying'].includes(state);
+export const newlyConfirmedUpdates=(jobs:UpdateJob[],tracked:ReadonlySet<string>)=>
+ jobs.filter(job=>job.state==='Succeeded'&&tracked.has(job.id));
+
+export function clientUpdateStatus(jobs:UpdateJob[],clientId:string,releaseVersion:string){
+ const clientJobs=jobs.filter(job=>job.clientId===clientId);
+ const latestForRelease=clientJobs.find(job=>job.targetVersion===releaseVersion);
+ const active=clientJobs.find(job=>activeUpdate(job.state));
+ const failure=latestForRelease&&(latestForRelease.state==='Failed'||latestForRelease.state==='RolledBack')
+  ?latestForRelease:undefined;
+ return {job:active??failure,installedVersion:clientJobs[0]?.installedVersion};
+}
+
 export function updateReason(c:UpdateClient,version:string,available:boolean,jobs:UpdateJob[]){
  if(!c.enabled)return 'Cliente desativado';if(!c.hasAgentBinding)return 'Agente não vinculado';if(c.remoteUpdateSupported!==true)return 'Reinstalação inicial necessária';if(!available)return 'Pacote indisponível';if(!c.agentVersion)return 'Versão não informada';
  const a=c.agentVersion.split('.').map(Number),b=version.split('.').map(Number);if(a.some(Number.isNaN)||b.some(Number.isNaN))return 'Versão não reconhecida';let older=false;for(let i=0;i<Math.max(a.length,b.length);i++){if((a[i]||0)<(b[i]||0)){older=true;break;}if((a[i]||0)>(b[i]||0))break;}if(!older)return 'Versão atual ou mais recente';
- if(jobs.some(j=>j.clientId===c.id&&['Pending','Waiting','Downloading','Applying','Verifying'].includes(j.state)))return 'Atualização em andamento';return '';
+ if(jobs.some(j=>j.clientId===c.id&&activeUpdate(j.state)))return 'Atualização em andamento';return '';
 }
 export const clientFtpPath=(base:string,slug:string)=>base.replace(/\/+$/,'')+'/'+slug+'/';
 export const canDeleteClient=(slug:string,confirmation:string,enabled:boolean=false)=>!enabled&&!!slug&&slug===confirmation;
@@ -18,7 +31,7 @@ export function deactivationNotice(state:DeactivationState|undefined){
 }
 export const deletionResultNotice=(result:DeleteResult|undefined)=>result?.pending?deactivationNotice(result.state):'Cliente, backups e histórico excluídos.';
 
-export function updateRequestNotice(result:{accepted?:unknown[];rejected?:{clientId:string;error?:string;reason?:string}[]},clients:{id:string;name:string}[]){const accepted=result.accepted?.length||0;const rejected=result.rejected||[];return accepted+' solicitação(ões) registrada(s).'+(rejected.length?' Rejeições: '+rejected.map(r=>(clients.find(c=>c.id===r.clientId)?.name||r.clientId)+': '+(r.error||r.reason||'Solicitação recusada')).join('; '):' Acompanhe os estados abaixo.');}
+export function updateRequestNotice(result:{accepted?:unknown[];rejected?:{clientId:string;error?:string;reason?:string}[]},clients:{id:string;name:string}[]){const accepted=result.accepted?.length||0;const rejected=result.rejected||[];return accepted+' solicitação(ões) registrada(s).'+(rejected.length?' Rejeições: '+rejected.map(r=>(clients.find(c=>c.id===r.clientId)?.name||r.clientId)+': '+(r.error||r.reason||'Solicitação recusada')).join('; '):' Acompanhe pela lista de agentes.');}
 
 export function isOutdatedAgent(installed:string|null|undefined,current:string):boolean {
  if(!installed||!/^\d+(?:\.\d+){1,3}$/.test(installed)||!/^\d+(?:\.\d+){1,3}$/.test(current))return false;

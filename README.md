@@ -4,8 +4,8 @@ Central para gerenciar backups SQL Server de clientes Windows. A API recebe resu
 
 ## Código nesta versão
 
-- `api/` e `web/` contêm as fontes da central em produção em 19/11/2026. O histórico por cliente exibe os 20 resultados mais recentes.
-- `agent/` e `installer/` contêm as fontes locais das versões 0.9.1 do agente e 0.9.0 do instalador Windows.
+- `api/` contém as fontes da API de produção de 19/11/2026. `web/` inclui a notificação de sucesso nas atualizações de agentes e exibe os 20 resultados mais recentes no histórico por cliente.
+- `agent/` e `installer/` contêm as fontes das versões 0.9.2 do agente e 0.9.0 do instalador Windows. Após perder a base diferencial, o agente aguarda a confirmação do próximo backup completo agendado antes de voltar a executar diferenciais automáticos.
 - `build/` contém o script de empacotamento. Cada ambiente fornece suas configurações e materiais de assinatura fora do repositório.
 
 ## Executar a central localmente

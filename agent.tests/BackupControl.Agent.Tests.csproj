@@ -5,5 +5,6 @@
     <PackageReference Include="xunit" Version="2.9.3" />
     <PackageReference Include="xunit.runner.visualstudio" Version="4.0.1"><PrivateAssets>all</PrivateAssets></PackageReference>
     <ProjectReference Include="../agent/BackupControl.Agent.csproj" />
+    <Compile Include="../tests/fixtures/LoopbackBackupFtp.cs" Link="LoopbackBackupFtp.cs" />
   </ItemGroup>
 </Project>

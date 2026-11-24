@@ -2598,6 +2598,7 @@ dd {
 @media(max-width:760px){.server-resources{grid-template-columns:1fr}.server-monitor-toolbar{align-items:flex-start;flex-direction:column}.server-usage-filters{grid-template-columns:1fr}.server-monitor .table-scroll{max-height:none}}
 
 .update-toolbar{display:flex;flex-wrap:wrap;gap:12px;margin:16px 0}.badge.skipped{background:var(--surface-2,#eef4f6);color:var(--text,#243746)}.danger-button{background:#ad2735;color:white}.modal code{overflow-wrap:anywhere}.modal label.check{display:flex;gap:10px;align-items:flex-start;margin:18px 0}.modal label.check input{width:auto}
+.agent-update-notification { position:fixed; z-index:120; inset-block-start:16px; inset-inline-end:16px; width:max-content; max-width:min(420px,calc(100vw - 32px)); margin:0; box-shadow:0 4px 18px #0003; overflow-wrap:anywhere; }
 
 /* Responsive client workspace: desktop cards, compact mobile list. */
 :root { --client-surface:#fff; --client-inset:#f4f7f4; --client-ok:#377557; --client-warning:#91621b; }
